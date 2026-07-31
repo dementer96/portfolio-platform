@@ -1,5 +1,55 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.jwt import create_access_token
+from app.core.security import hash_password, verify_password
+from app.db.session import get_db
+from app.models.user import User
+from app.schemas.token import Token
+from app.schemas.user import UserCreate, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# POST /auth/register and POST /auth/login are implemented in the next step.
+
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def register(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
+    existing = db.query(User).filter(func.lower(User.email) == user_in.email).first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already registered",
+        )
+
+    user = User(email=user_in.email, hashed_password=hash_password(user_in.password))
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already registered",
+        )
+    db.refresh(user)
+    return user
+
+
+@router.post("/login", response_model=Token)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
+) -> Token:
+    email = form_data.username.lower()
+    user = db.query(User).filter(func.lower(User.email) == email).first()
+
+    if user is None or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(subject=str(user.id))
+    return Token(access_token=access_token)
