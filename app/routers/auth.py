@@ -13,6 +13,10 @@ from app.schemas.user import UserCreate, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# Fixed hash to compare against when no user is found, so a nonexistent email
+# still pays the bcrypt cost - otherwise response time leaks account existence.
+_DUMMY_PASSWORD_HASH = hash_password("not-a-real-account-timing-safety-dummy")
+
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(user_in: UserCreate, db: Session = Depends(get_db)) -> User:
@@ -44,7 +48,15 @@ def login(
     email = form_data.username.lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
 
-    if user is None or not verify_password(form_data.password, user.hashed_password):
+    if user is None:
+        verify_password(form_data.password, _DUMMY_PASSWORD_HASH)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
